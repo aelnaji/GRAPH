@@ -48,6 +48,8 @@ export interface PolicyEntry {
   value: unknown;
   valueType: 'number' | 'boolean' | 'string' | 'object';
   category: 'routing' | 'retry' | 'attention' | 'decay' | 'threshold';
+  minValue?: number | null;
+  maxValue?: number | null;
 }
 
 export interface IngestPayload {
@@ -83,26 +85,32 @@ export interface GraphUpdateEvent {
   timestamp: number;
 }
 
-// Default policies
-export const DEFAULT_POLICIES: Record<string, { value: number; category: string; valueType: string }> = {
-  'routing.perception_weight': { value: 1.0, category: 'routing', valueType: 'number' },
-  'routing.memory_weight': { value: 1.0, category: 'routing', valueType: 'number' },
-  'routing.state_weight': { value: 1.0, category: 'routing', valueType: 'number' },
-  'routing.selfmodify_weight': { value: 0.5, category: 'routing', valueType: 'number' },
-  'retry.max_attempts': { value: 3, category: 'retry', valueType: 'number' },
-  'retry.backoff_ms': { value: 1000, category: 'retry', valueType: 'number' },
-  'attention.gate_threshold': { value: 0.3, category: 'attention', valueType: 'number' },
-  'attention.focus_decay': { value: 0.05, category: 'attention', valueType: 'number' },
-  'decay.base_rate': { value: 0.01, category: 'decay', valueType: 'number' },
-  'decay.inactivity_days': { value: 7, category: 'decay', valueType: 'number' },
-  'threshold.verify_confidence': { value: 0.7, category: 'threshold', valueType: 'number' },
-  'threshold.promote_confidence': { value: 0.85, category: 'threshold', valueType: 'number' },
-  'threshold.novelty_floor': { value: 0.1, category: 'threshold', valueType: 'number' },
-  'threshold.link_similarity': { value: 0.6, category: 'threshold', valueType: 'number' },
-  'routing.batch_size': { value: 10, category: 'routing', valueType: 'number' },
+// Default policies with min/max guardrail bounds
+export const DEFAULT_POLICIES: Record<string, {
+  value: number;
+  category: string;
+  valueType: string;
+  minValue: number;
+  maxValue: number;
+}> = {
+  'routing.perception_weight':  { value: 1.0,  category: 'routing',   valueType: 'number', minValue: 0.1,  maxValue: 3.0  },
+  'routing.memory_weight':      { value: 1.0,  category: 'routing',   valueType: 'number', minValue: 0.1,  maxValue: 3.0  },
+  'routing.state_weight':       { value: 1.0,  category: 'routing',   valueType: 'number', minValue: 0.1,  maxValue: 3.0  },
+  'routing.selfmodify_weight':  { value: 0.5,  category: 'routing',   valueType: 'number', minValue: 0.1,  maxValue: 2.0  },
+  'routing.batch_size':         { value: 10,   category: 'routing',   valueType: 'number', minValue: 1,    maxValue: 50   },
+  'retry.max_attempts':         { value: 3,    category: 'retry',     valueType: 'number', minValue: 1,    maxValue: 5    },
+  'retry.backoff_ms':           { value: 1000, category: 'retry',     valueType: 'number', minValue: 100,  maxValue: 5000 },
+  'attention.gate_threshold':   { value: 0.3,  category: 'attention', valueType: 'number', minValue: 0.05, maxValue: 0.9  },
+  'attention.focus_decay':      { value: 0.05, category: 'attention', valueType: 'number', minValue: 0.01, maxValue: 0.5  },
+  'decay.base_rate':            { value: 0.01, category: 'decay',     valueType: 'number', minValue: 0.001,maxValue: 0.05 },
+  'decay.inactivity_days':      { value: 7,    category: 'decay',     valueType: 'number', minValue: 1,    maxValue: 90   },
+  'threshold.verify_confidence':{ value: 0.7,  category: 'threshold', valueType: 'number', minValue: 0.3,  maxValue: 0.95 },
+  'threshold.promote_confidence':{ value: 0.85, category: 'threshold',valueType: 'number', minValue: 0.5,  maxValue: 0.99 },
+  'threshold.novelty_floor':    { value: 0.1,  category: 'threshold', valueType: 'number', minValue: 0.01, maxValue: 0.5  },
+  'threshold.link_similarity':  { value: 0.6,  category: 'threshold', valueType: 'number', minValue: 0.1,  maxValue: 0.9  },
 };
 
-// In-memory event bus for SSE-like broadcasting
+// In-memory event bus for SSE broadcasting
 type EventListener = (event: GraphUpdateEvent) => void;
 
 class EventBus {
@@ -110,9 +118,7 @@ class EventBus {
 
   emit(event: GraphUpdateEvent): void {
     for (const listener of this.listeners) {
-      try {
-        listener(event);
-      } catch (e) {
+      try { listener(event); } catch (e) {
         console.error('[EventBus] Listener error:', e);
       }
     }
@@ -126,7 +132,6 @@ class EventBus {
 
 export const eventBus = new EventBus();
 
-// In-memory queue for async processing
 interface QueueItem {
   id: string;
   payload: IngestPayload;
@@ -136,7 +141,6 @@ interface QueueItem {
 
 class IngestQueue {
   private queue: QueueItem[] = [];
-  private processing = false;
 
   enqueue(payload: IngestPayload, priority: number = 5): string {
     const id = `q_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -145,17 +149,9 @@ class IngestQueue {
     return id;
   }
 
-  dequeue(): QueueItem | undefined {
-    return this.queue.shift();
-  }
-
-  get length(): number {
-    return this.queue.length;
-  }
-
-  isEmpty(): boolean {
-    return this.queue.length === 0;
-  }
+  dequeue(): QueueItem | undefined { return this.queue.shift(); }
+  get length(): number { return this.queue.length; }
+  isEmpty(): boolean { return this.queue.length === 0; }
 }
 
 export const ingestQueue = new IngestQueue();
