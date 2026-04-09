@@ -6,8 +6,13 @@ import { StateEmotionAgent } from './state-emotion';
 import { SelfModifyAgent } from './self-modify';
 import { ensurePolicies } from './policy-store';
 
-// Orchestrator: closed-loop cognition
-// Perception → Memory Verify → State Evaluate → Policy Update → Action → Log
+// Startup check: warn early if OPENAI_API_KEY is missing
+if (!process.env.OPENAI_API_KEY) {
+  console.error(
+    '[ORCHESTRATOR] ⚠️  OPENAI_API_KEY is not set. ' +
+    'LLM calls will fail. Set it in your .env file.'
+  );
+}
 
 export class Orchestrator {
   private perception = new PerceptionAgent();
@@ -15,7 +20,6 @@ export class Orchestrator {
   private stateEmotion = new StateEmotionAgent();
   private selfModify = new SelfModifyAgent();
 
-  // Main cognition loop for a single input
   async processInput(payload: IngestPayload): Promise<{
     nodeId: string;
     action: string;
@@ -29,32 +33,25 @@ export class Orchestrator {
     const state: Record<string, number> = {};
 
     try {
-      // Step 1: PERCEPTION - Chunk and extract
       const perceived = await this.perception.process(payload);
       
       for (const nodeData of perceived) {
-        // Step 2: MEMORY VERIFY - Check against existing knowledge
         const verification = await this.memory.verify(nodeData);
-        
-        // Step 3: STATE EVALUATE - Score the node
         const evaluatedState = this.stateEmotion.evaluateState(nodeData, verification);
         Object.assign(nodeData, evaluatedState);
 
         if (verification.action === 'reinforce' && verification.existingId) {
-          // Reinforce existing node
           nodeId = verification.existingId;
           action = 'reinforce';
           await this.memory.reinforceNode(nodeId, evaluatedState.confidence - nodeData.confidence);
           state.confidence = evaluatedState.confidence;
           state.novelty = evaluatedState.novelty;
         } else {
-          // Create new node
           nodeId = await this.memory.createNode(nodeData);
           action = 'create';
           state.confidence = evaluatedState.confidence;
           state.novelty = evaluatedState.novelty;
 
-          // Auto-link with similar nodes
           if (verification.existingId) {
             await this.memory.createEdge({
               sourceId: nodeId,
@@ -67,10 +64,8 @@ export class Orchestrator {
           }
         }
 
-        // Auto-link with other nodes based on tags
         await this.memory.autoLink(nodeId, verification.existingId);
 
-        // Step 4: LOG every action
         await this.logCycle(nodeId, 'ingest_complete', {
           action,
           source: payload.source,
@@ -93,18 +88,15 @@ export class Orchestrator {
     }
   }
 
-  // Process chat message through the cognition loop
   async processChatMessage(role: string, content: string): Promise<{
     chatId: string;
     nodeId?: string;
     state?: Record<string, number>;
   }> {
-    // Store the chat message
     const chatMsg = await db.chatMessage.create({
       data: { role, content },
     });
 
-    // Only process user messages through perception
     if (role === 'user') {
       const result = await this.processInput({
         content,
@@ -117,7 +109,6 @@ export class Orchestrator {
         data: { processed: true, nodeId: result.nodeId },
       });
 
-      // Emit chat node event for real-time visualization
       eventBus.emit({
         type: 'chat_node',
         data: {
@@ -133,7 +124,6 @@ export class Orchestrator {
       return { chatId: chatMsg.id, nodeId: result.nodeId, state: result.state };
     }
 
-    // For assistant messages, just log them
     await db.chatMessage.update({
       where: { id: chatMsg.id },
       data: { processed: true },
@@ -141,18 +131,13 @@ export class Orchestrator {
 
     eventBus.emit({
       type: 'chat_node',
-      data: {
-        chatId: chatMsg.id,
-        role,
-        content: content.slice(0, 200),
-      },
+      data: { chatId: chatMsg.id, role, content: content.slice(0, 200) },
       timestamp: Date.now(),
     });
 
     return { chatId: chatMsg.id };
   }
 
-  // Periodic maintenance: decay + consolidate + self-modify
   async maintenanceCycle(): Promise<{
     decayed: number;
     consolidated: number;
@@ -160,31 +145,27 @@ export class Orchestrator {
   }> {
     await ensurePolicies();
 
-    // Decay low-confidence nodes
     const decayed = await this.memory.decayNodes();
-
-    // Consolidate verified nodes
     const consolidated = await this.memory.consolidateNodes();
 
-    // Get recent stats for self-modification
     const recentLogs = await db.systemLog.findMany({
       where: {
         eventType: 'ingest_complete',
-        createdAt: { gte: new Date(Date.now() - 3600000) }, // last hour
+        createdAt: { gte: new Date(Date.now() - 3600000) },
       },
     });
 
+    // payload is now a native JSON object — no JSON.parse needed
     const successCount = recentLogs.filter(l => {
-      const payload = JSON.parse(l.payload);
-      return !payload.error;
+      const p = l.payload as Record<string, unknown>;
+      return !p.error;
     }).length;
 
     const failureCount = recentLogs.filter(l => {
-      const payload = JSON.parse(l.payload);
-      return !!payload.error;
+      const p = l.payload as Record<string, unknown>;
+      return !!p.error;
     }).length;
 
-    // Self-modify based on performance
     const adjustments = await this.selfModify.evaluateAndAdapt({
       successCount,
       failureCount,
@@ -206,7 +187,6 @@ export class Orchestrator {
     return { decayed, consolidated, policyAdjustments: adjustments.length };
   }
 
-  // Get full cognition state for dashboard
   async getCognitionState(): Promise<CognitionState> {
     const [nodeCount, edgeCount, logCount, policyCount, verifiedCount, promotedCount] = await Promise.all([
       db.knowledgeNode.count(),
@@ -236,16 +216,13 @@ export class Orchestrator {
     };
   }
 
-  // Get graph data for 3D visualization
   async getGraphData(): Promise<{ nodes: any[]; links: any[] }> {
     const [nodes, edges] = await Promise.all([
       db.knowledgeNode.findMany({
         orderBy: { confidence: 'desc' },
         take: 200,
       }),
-      db.knowledgeEdge.findMany({
-        take: 500,
-      }),
+      db.knowledgeEdge.findMany({ take: 500 }),
     ]);
 
     const nodeIds = new Set(nodes.map(n => n.id));
@@ -257,7 +234,7 @@ export class Orchestrator {
         fullName: n.content,
         type: n.type,
         source: n.source,
-        val: n.confidence * 10, // node size
+        val: n.confidence * 10,
         color: this.nodeColor(n.confidence, n.valence),
         confidence: n.confidence,
         novelty: n.novelty,
@@ -267,7 +244,8 @@ export class Orchestrator {
         verified: n.verified,
         promoted: n.promoted,
         accessCount: n.accessCount,
-        tags: JSON.parse(n.tags),
+        // tags is now a native JSON value — no JSON.parse needed
+        tags: n.tags,
         createdAt: n.createdAt.toISOString(),
       })),
       links: edges
@@ -282,48 +260,36 @@ export class Orchestrator {
     };
   }
 
-  // Map confidence + valence to RGB color for visualization
   private nodeColor(confidence: number, valence: number): string {
-    // High confidence + positive valence = green
-    // High confidence + negative valence = red
-    // Low confidence = gray/dim
-    // Medium confidence = amber/yellow
-
     const brightness = 0.3 + confidence * 0.7;
-    
     if (confidence > 0.7 && valence > 0) {
-      // Green spectrum
       const g = Math.floor(100 + valence * 155);
       const r = Math.floor(50 * (1 - valence));
       const b = Math.floor(50 * (1 - valence));
       return `rgb(${r * brightness}, ${g * brightness}, ${b * brightness})`;
     } else if (confidence > 0.7 && valence < 0) {
-      // Red spectrum
       const r = Math.floor(100 + Math.abs(valence) * 155);
       const g = Math.floor(50 * (1 - Math.abs(valence)));
       const b = Math.floor(80);
       return `rgb(${r * brightness}, ${g * brightness}, ${b * brightness})`;
     } else if (confidence > 0.4) {
-      // Amber spectrum
       const r = Math.floor(200 * brightness);
       const g = Math.floor(150 * brightness);
       const b = Math.floor(30 * brightness);
       return `rgb(${r}, ${g}, ${b})`;
     } else {
-      // Gray/dim
       const v = Math.floor(100 * brightness);
       return `rgb(${v}, ${v}, ${Math.floor(v * 1.1)})`;
     }
   }
 
-  // Log a cognition cycle event
   private async logCycle(nodeId: string, eventType: string, payload: Record<string, unknown>): Promise<void> {
     await db.systemLog.create({
       data: {
         eventType,
         category: 'agent',
         level: 'info',
-        payload: JSON.stringify(payload),
+        payload: payload as any,
         nodeId: nodeId !== 'unknown' && nodeId !== 'system' ? nodeId : null,
         agentName: 'orchestrator',
       },
@@ -337,7 +303,6 @@ export class Orchestrator {
   }
 }
 
-// Singleton instance
 let orchestratorInstance: Orchestrator | null = null;
 
 export function getOrchestrator(): Orchestrator {
