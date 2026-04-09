@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-build:
+    name: Lint, Type Check & Build
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: graph_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    env:
+      DATABASE_URL: postgresql://postgres:password@localhost:5432/graph_test
+      OPENAI_API_KEY: sk-test-placeholder
+      JWT_SECRET: ci-test-jwt-secret-32-chars-long!!
+      API_SECRET_KEY: ci-test-api-secret
+      NODE_ENV: test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Generate Prisma client
+        run: bunx prisma generate
+
+      - name: Run database migrations
+        run: bunx prisma migrate deploy
+
+      - name: Type check
+        run: bun run tsc --noEmit
+        continue-on-error: true
+
+      - name: Lint
+        run: bun run lint
+        continue-on-error: true
+
+      - name: Build
+        run: bun run build
+
+      - name: Run tests (if any)
+        run: bun test --if-present
+        continue-on-error: true

@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -21,8 +21,8 @@ model KnowledgeNode {
   accessCount Int      @default(0)
   verified    Boolean  @default(false)
   promoted    Boolean  @default(false) // promoted to semantic store
-  metadata    String   @default("{}") // JSON string for extra data
-  tags        String   @default("[]") // JSON array of tag strings
+  metadata    Json     @default("{}") 
+  tags        Json     @default("[]")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -43,12 +43,12 @@ model KnowledgeEdge {
   relationType String         @default("related") // related, causality, hierarchy, sequence, opposition
   weight       Float          @default(0.5)
   verified     Boolean        @default(false)
-  metadata     String         @default("{}")
+  metadata     Json           @default("{}")
   createdAt    DateTime       @default(now())
   updatedAt    DateTime       @updatedAt
 
-  source       KnowledgeNode  @relation("SourceNode", fields: [sourceId], references: [id])
-  target       KnowledgeNode  @relation("TargetNode", fields: [targetId], references: [id])
+  source       KnowledgeNode  @relation("SourceNode", fields: [sourceId], references: [id], onDelete: Cascade)
+  target       KnowledgeNode  @relation("TargetNode", fields: [targetId], references: [id], onDelete: Cascade)
 
   @@index([sourceId])
   @@index([targetId])
@@ -60,10 +60,9 @@ model SystemLog {
   eventType String   // ingest, verify, decay, consolidate, policy_update, state_shift, error
   category  String   @default("system") // system, agent, memory, policy, graph
   level     String   @default("info")   // debug, info, warn, error
-  payload   String   // JSON string
+  payload   Json     // JSON payload
   nodeId    String?
   agentName String?
-
   createdAt DateTime @default(now())
 
   node      KnowledgeNode? @relation(fields: [nodeId], references: [id])
@@ -77,9 +76,11 @@ model SystemLog {
 model PolicyConfig {
   id        String   @id @default(cuid())
   key       String   @unique
-  value     String   // JSON string for flexible types
+  value     Json     // flexible JSON type
   valueType String   @default("number") // number, boolean, string, object
   category  String   @default("routing") // routing, retry, attention, decay, threshold
+  minValue  Float?   // guardrail: minimum allowed numeric value
+  maxValue  Float?   // guardrail: maximum allowed numeric value
   updatedAt DateTime @updatedAt
   createdAt DateTime @default(now())
 
@@ -93,7 +94,7 @@ model ChatMessage {
   content   String
   processed Boolean  @default(false)
   nodeId    String?  // linked knowledge node if created
-  metadata  String   @default("{}")
+  metadata  Json     @default("{}")
   createdAt DateTime @default(now())
 
   @@index([role])
@@ -102,15 +103,15 @@ model ChatMessage {
 }
 
 model IngestQueue {
-  id        String   @id @default(cuid())
-  payload   String   // JSON string
-  status    String   @default("pending") // pending, processing, completed, failed
-  priority  Int      @default(5) // 1=low, 5=medium, 10=high
-  attempts  Int      @default(0)
-  maxAttempts Int    @default(3)
-  error     String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id          String    @id @default(cuid())
+  payload     Json      // JSON payload
+  status      String    @default("pending") // pending, processing, completed, failed
+  priority    Int       @default(5) // 1=low, 5=medium, 10=high
+  attempts    Int       @default(0)
+  maxAttempts Int       @default(3)
+  error       String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
   completedAt DateTime?
 
   @@index([status])
